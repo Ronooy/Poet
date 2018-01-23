@@ -1,0 +1,779 @@
+from multiprocessing import freeze_support,Process,Queue,Pool,Manager,Event
+from tkinter import *
+from tkinter import messagebox
+from bs4 import BeautifulSoup
+from lxml import etree
+import urllib.request
+import urllib.parse
+import http.cookiejar
+import re
+import os
+import time
+import threading
+import random
+import json
+
+user_agent_list = ["Mozilla/5.0 (Windows NT 10.0; WOW64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/53.0.2785.104 Safari/537.36 Core/1.53.2604.400 QQBrowser/9.6.10897.400",
+                   "Mozilla/5.0 (Windows NT 6.1) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/53.0.2785.104 Safari/537.36 Core/1.53.3368.400 QQBrowser/9.6.11974.400",
+                   "Mozilla/5.0 (Windows NT 6.1; WOW64) AppleWebKit/535.11 (KHTML, like Gecko) Chrome/17.0.963.56 Safari/535.11",
+                   "Mozilla/5.0 (Windows NT 6.1; WOW64) AppleWebKit/536.6 (KHTML, like Gecko) Chrome/20.0.1092.0 Safari/536.6",
+                   "Mozilla/5.0 (Windows NT 6.2) AppleWebKit/536.6 (KHTML, like Gecko) Chrome/20.0.1090.0 Safari/536.6",
+                   "Mozilla/5.0 (Windows NT 6.2; WOW64) AppleWebKit/537.1 (KHTML, like Gecko) Chrome/19.77.34.5 Safari/537.1",
+                   "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/536.5 (KHTML, like Gecko) Chrome/19.0.1084.9 Safari/536.5",
+                   "Mozilla/5.0 (Windows NT 6.0) AppleWebKit/536.5 (KHTML, like Gecko) Chrome/19.0.1084.36 Safari/536.5",
+                   "Mozilla/5.0 (Windows NT 6.1; WOW64) AppleWebKit/536.3 (KHTML, like Gecko) Chrome/19.0.1063.0 Safari/536.3",
+                   "Mozilla/5.0 (Windows NT 5.1) AppleWebKit/536.3 (KHTML, like Gecko) Chrome/19.0.1063.0 Safari/536.3",
+                   "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_8_0) AppleWebKit/536.3 (KHTML, like Gecko) Chrome/19.0.1063.0 Safari/536.3",
+                   "Mozilla/5.0 (Windows NT 6.2) AppleWebKit/536.3 (KHTML, like Gecko) Chrome/19.0.1062.0 Safari/536.3",
+                   "Mozilla/5.0 (Windows NT 6.1; WOW64) AppleWebKit/536.3 (KHTML, like Gecko) Chrome/19.0.1062.0 Safari/536.3",
+                   "Mozilla/5.0 (Windows NT 6.2) AppleWebKit/536.3 (KHTML, like Gecko) Chrome/19.0.1061.1 Safari/536.3",
+                   "Mozilla/5.0 (Windows NT 6.1; WOW64) AppleWebKit/536.3 (KHTML, like Gecko) Chrome/19.0.1061.1 Safari/536.3",
+                   "Mozilla/5.0 (Windows NT 6.1) AppleWebKit/536.3 (KHTML, like Gecko) Chrome/19.0.1061.1 Safari/536.3",
+                   "Mozilla/5.0 (Windows NT 6.2) AppleWebKit/536.3 (KHTML, like Gecko) Chrome/19.0.1061.0 Safari/536.3",
+                   "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/535.24 (KHTML, like Gecko) Chrome/19.0.1055.1 Safari/535.24",
+                   "Mozilla/5.0 (Windows NT 6.2; WOW64) AppleWebKit/535.24 (KHTML, like Gecko) Chrome/19.0.1055.1 Safari/535.24"
+                   ]
+
+HH=int((time.strftime("%Y-%m-%d %H:%M:%S", time.localtime())).split()[1].split(":")[0]) #获取当前时间 XX小时前
+news_times="".join((time.strftime("%Y-%m-%d %H:%M:%S", time.localtime())).split()[0].split("-"))#获取当前时间nxny论坛时间对比
+time_now=time.strftime("%Y-%m-%d %H:%M:%S", time.localtime())
+istock_time=time.strftime("%Y-%m-%d").split('-',1)[1]
+istock_url={'国信证券':'http://istock.jrj.com.cn/yanbao_200002185.html',
+            '平安证券':'http://istock.jrj.com.cn/yanbao_200005766.html',
+            '招商证券':'http://istock.jrj.com.cn/yanbao_200042503.html'}
+
+
+def istock(istock_url,queue_info):
+    '''金融界信息爬取'''
+    for name,url in istock_url.items():
+        queue_info.put('正在金融界搜索%s'%name)
+        request=urllib.request.Request(url)
+        request.add_header("User-Agent",random.choice(user_agent_list))
+        res=urllib.request.urlopen(request).read().decode('gb18030')
+        html=etree.HTML(res)
+        for tep in range(2,100):
+            try:
+                link=html.xpath('//div[@class="reslist"]//tr[%d]/td[1]/span/a/@href'%tep)[0]
+                title=html.xpath('//div[@class="reslist"]//tr[%d]/td[1]/span/a/@title'%tep)[0]
+                newsdate=html.xpath('//div[@class="reslist"]//tr[%d]/td[3]'%tep)[0].text
+            except Exception as f:
+                queue_info.put('金融界网站页面可能改变')
+                break
+            if newsdate==istock_time:
+                titles=re.sub('【\w+】','',title)
+                if titles=='':
+                    titles=title
+                yield(name,link,titles)
+            else:
+                break
+            
+def nxny_spider(queue_info):
+    '''nxny网站爬取'''
+    with open("论坛博文.ini")as f:
+        for win in f:
+            try:
+                weat,info_title,n=win.split("|")
+            except:
+                queue_info.put('论坛博文.ini 格式有点问题')
+                continue
+            queue_info.put("正在搜索and添加【%s】"%info_title)
+            key=urllib.parse.quote(weat)
+            url_key="http://www.nxny.com/search_1.aspx?si=1&ft=0&fb=1&keyword="
+            url=url_key+key
+            xy=2
+            TT="http://www.nxny.com"
+            def app(url,info_title):
+                nonlocal xy,TT
+                res=urllib.request.Request(url)
+                res.add_header("User-Agent",random.choice(user_agent_list))
+                response=urllib.request.urlopen(res).read()
+                soup=BeautifulSoup(response,'html.parser')
+                title_name=soup.find_all('td',class_="rlist")
+                page_name=soup.find_all('a')
+                for i in title_name:
+                    link_ke=i.a['href']
+                    try:
+                        title,x=str(i.a.string).split('-1')
+                    except :
+                            pass
+                    else:
+                        titi=i.next_sibling.next_sibling.next_sibling.string.strip()
+                        if titi==news_times:
+                            yield(info_title,title,TT+link_ke)
+                for zz in page_name:
+                    try:
+                        XZ=int(zz.string)
+                    except:
+                        pass
+                    else:
+                        if XZ==xy:
+                            xy+=1
+                            bat=zz["href"]
+                            url=TT+'/'+bat
+                            res=urllib.request.Request(url)
+                            res.add_header("User-Agent",random.choice(user_agent_list))
+                            response=urllib.request.urlopen(res).read()
+                            soup=BeautifulSoup(response,'html.parser')
+                            title_name=soup.find_all('td',class_="rlist")
+                            page_name=soup.find_all('a')
+                            for i in title_name:
+                                link_ke=i.a['href']
+                                try:
+                                    title,x=str(i.a.string).split('-1')
+                                except :
+                                        pass
+                                else:
+                                    titi=i.next_sibling.next_sibling.next_sibling.string.strip()
+                                    if titi==news_times:
+                                        yield(info_title,title,TT+link_ke)
+            yield app(url,info_title)
+
+            
+def title_numbers(title):
+    '''统计晚班信息条数'''
+    left_url="http://www.baidu.com/s?q1=&q2="
+    key=urllib.parse.quote(title)
+    right="&q3=&q4=&rn=10&lm=1&ct=0&ft=&q5=&q6=&tn=baiduadv"
+    url=''.join([left_url,key,right])
+    headers={"User-Agent":random.choice(user_agent_list)}
+    res=urllib.request.Request(url,headers=headers)
+    try:
+        response=urllib.request.urlopen(res).read().decode('utf-8')
+        doc=etree.HTML(response)
+        numbers=int(doc.xpath('//div[@class="head_nums_cont_inner"]/div[@class="nums"]/text()')[0].split('结果约')[1].split('个')[0].strip())
+        if numbers==0 or numbers==1:
+            numbers=2
+        elif numbers <300:
+            numbers=numbers
+        else:
+            numbers=random.randint(30,200)
+        return numbers
+    except:
+        #print(title,'条数为随机,网站可能发生点变化')
+        numbers=random.randint(10,55)
+        return numbers
+
+def page_add(url, page_number, search, infotitle,queue_info,manlist):
+    '''百度信息爬取'''
+    url_new_key="http://news.baidu.com"
+    res=urllib.request.Request(url)
+    res.add_header("User-Agent", random.choice(user_agent_list))
+    try:
+        response=urllib.request.urlopen(res).read()
+    except:
+        queue_info.put('百度连接超时！(重新拨号或重启路由)')
+        queue_info.put('链接地址:%s'%url)
+        return
+    soup=BeautifulSoup(response, 'html.parser')
+    soup_list=soup.find_all('div', class_="result title")
+    for eat in soup_list:
+        try:
+            title=eat.select('a')[0].get_text()
+            link=eat.a.get("href")
+            ti=eat.select('div')[0].get_text().split()[1]
+        except:
+            queue_info.put('百度新闻网站结构可能发生变化,请告知相关人员!')
+            return
+        if '+' not in search:
+            if search not in title:
+                continue
+        else:
+            BU=False
+            searchs=search.split('+')
+            for sea in searchs:
+                if sea in title:
+                    BU=False
+                    break
+                else:
+                    BU=True
+            if BU:
+                continue
+        if "分钟前" in ti:
+            try:
+                # lock.acquire()
+                manlist.append("%s||%s||%s\n"%(infotitle, title, link))
+                #baidu_sougou_news_temp.write()
+                #baidu_sougou_news_temp.flush()
+                #print("%s||%s||%s\n"%(infotitle,title,link))
+                # lock.release()
+            except Exception as fu:
+                queue_info.put('这条信息有点问题,请注意:【%s %s %s】'%(title,link,fu))
+                continue
+        elif "小时" in ti:
+            if int(ti.split("小时")[0]) <= HH:
+                try:
+                    # lock.acquire()
+                    manlist.append("%s||%s||%s\n" % (infotitle, title, link))
+                    #print("%s||%s||%s\n"%(infotitle,title,link))
+                    # lock.release()
+                except Exception as fs:
+                    queue_info.put('这条信息有点问题,请注意:【%s %s %s】'%(title, link, fs))
+                    continue
+        else:
+            continue
+
+    for ib in soup.find_all("a", class_="n"):
+        if "下一页>" in str(ib.string) and page_number < 4:
+            new=''.join(["http://news.baidu.com"+ib['href']])
+            page_number+=1
+            time.sleep(3)
+            page_add(new, page_number, search, infotitle,queue_info,manlist)
+
+
+def baidu_spider(search,infotitle,queue_info,manlist,processId):
+    '''百度搜索链接初始'''
+    idpro=os.getpid()
+    if idpro not in processId:
+        processId.append(idpro)
+    queue_info.put('正在百度搜索%s'%search)
+    page_number=1
+    link_key=urllib.parse.quote(search)
+    url=''.join(['http://news.baidu.com/ns?word=', link_key, '&tn=newstitle&from=news&cl=2&rn=20&ct=0'])
+    page_add(url, page_number, search, infotitle,queue_info,manlist)
+
+def baidu_run(processnumber,queue_info,processId,processevent):
+    '''百度进程池启动'''
+    pool=Pool(int(processnumber))
+    manlist=Manager().list()
+    with open("舆情搜索客户.ini")as f:
+        num=0
+        for eaet in f:
+            if processevent.is_set():
+                try:
+                    search, infotitle, z=eaet.split("|")
+                except:
+                    queue_info.put('舆情搜索客户.ini格式有点问题')
+                    continue
+                # t=Thread(target=baidu_spider,args=[search,infotitle,lock])
+                pool.apply_async(func=baidu_spider, args=(search,infotitle,queue_info,manlist,processId))
+                
+        pool.close()
+        pool.join()
+        with open('baidu_sougou_news_temp.txt', 'a', encoding='utf-8') as f:
+            for infoo in manlist:
+                f.write(infoo)
+            del manlist
+            queue_info.put('███████████████████████████████\n'+'████████百度 搜索完成!████████████████\n'+\
+                           '███████████████████████████████')
+
+        
+def info_play(url, link_a, search, infotitle, page_number,manlist,queue_info):
+    '''360网页信息爬取'''
+    res=urllib.request.Request(url)
+    res.add_header("User-Agent", random.choice(user_agent_list))
+    try:
+        response=urllib.request.urlopen(res).read()
+    except Exception as f:
+        queue_info.put('360搜索连接超时！(重新拨号或重启路由)')
+        queue_info.put('链接地址:【%s %s】'%(url, f))
+        return
+    soup=BeautifulSoup(response, 'html.parser')
+    name=soup.find_all('li', class_="res-list")
+    file_page=soup.find_all('a')
+    for i in name:
+        try:
+            link=i.a.get('href')
+            title=i.select('a')[0].get_text()
+            yy=i.div.find('span', class_='pdate').string
+        except:
+            queue_info.put('360搜索网站结构可能发生变化,请告知相关人员!')
+            time.sleep(5)
+            return
+        if '+' not in search:
+            if search not in title:
+                continue
+        else:
+            BU=False
+            searchs=search.split('+')
+            for sea in searchs:
+                if sea in title:
+                    BU=False
+                    break
+                else:
+                    BU=True
+            if BU:
+                continue
+        if '分钟前' in yy:
+            try:
+                # lock.acquire()
+                manlist.append("%s||%s||%s\n" % (infotitle, title, link))
+                #baidu_sougou_news_temp.flush()
+                # print("%s||%s||%s\n"%(infotitle,title,link))
+                # lock.release()
+            except Exception as f:
+                queue_info.put('这条信息有点问题,请注意:【%s %s %s】'%(title, link,f))
+                continue
+        elif "小时前" in yy:
+            if int(yy.split("小时")[0]) <= HH:
+                try:
+                    # lock.acquire()
+                    manlist.append("%s||%s||%s\n" % (infotitle, title, link))
+                    #baidu_sougou_news_temp.flush()
+                    # print("%s||%s||%s\n"%(infotitle,title,link))
+                    # lock.release()
+                except Exception as c:
+                    queue_info.put('这条信息有点问题,请注意:【%s %s %s】'%(title, link, c))
+                    continue
+        else:
+            continue
+    for ai in file_page:
+        ii=ai.get('style')
+        xx=ai.get('href')
+        pp=ai.string
+        if (ii) and (pp=="下一页>") and (page_number < 3):
+            page_url=''.join([link_a, xx])
+            page_number+=1
+            time.sleep(3)
+            info_play(page_url, link_a, search, infotitle, page_number,manlist,queue_info)
+
+
+def sougou_spider(search, infotitle,manlist,queue_info,processId):
+    '''360链接初始'''
+    idpro=os.getpid()
+    if idpro not in processId:
+        processId.append(idpro)
+    queue_info.put('正在360搜索%s'%search)
+    page_number=1
+    link_a='http://news.so.com/ns'
+    link_key=''.join(['?q=', urllib.parse.quote(search)])
+    url=''.join(['http://news.so.com/ns', link_key, '&tn=newstitle&src=page'])
+    info_play(url, link_a, search, infotitle, page_number, manlist,queue_info)
+
+def sougou_run(processnumber,queue_info,processId,processevent):
+    '''360搜索进程池启动'''
+    pool=Pool(int(processnumber))
+    manlist=Manager().list()
+    with open("舆情搜索客户.ini")as f:
+        for gdp in f:
+            if processevent.is_set():
+                try:
+                    search, infotitle, z=gdp.split("|")
+                except:
+                    queue_info.put('舆情搜索客户.ini 格式有点问题')
+                    continue
+                # t=Thread(target=sougou_spider,args=(search,infotitle))
+                pool.apply_async(func=sougou_spider, args=(search, infotitle,manlist,queue_info,processId))
+        pool.close()
+
+        pool.join()            
+        with open('baidu_sougou_news_temp.txt', 'a', encoding='utf-8') as f:
+            for infolist in manlist:
+                f.write(infolist)
+            del manlist
+            queue_info.put('███████████████████████████████\n'+'████████360 搜索完成█████████████████\n'+\
+                           '███████████████████████████████')
+
+        
+def login_web(web_name,web_pwd,state_web):
+    '''web登录'''
+    user_name_page=web_name
+    pass_word_page=web_pwd
+    wanban_go=state_web
+    if wanban_go=='T':
+        wan_ban=0 #非晚班
+    elif wanban_go=='F':
+        wan_ban=1
+    else:
+        wan_ban=0
+    loginurl = 'http://192.168.0.237:99/log.asp'
+    cookie=http.cookiejar.CookieJar()
+    reas=urllib.request.HTTPCookieProcessor(cookie)
+    opener = urllib.request.build_opener(reas)
+    data = {}
+    data['username'] = user_name_page
+    data['userpwd'] = pass_word_page
+    data['wanban'] = wan_ban
+    data['Submit']='提交'
+    opener.addheaders=[('User-Agent','Mozilla/5.0 (Windows NT 6.1) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/53.0.2785.104 Safari/537.36 Core/1.53.3368.400 QQBrowser/9.6.11974.400')]
+    response = opener.open(loginurl, urllib.parse.urlencode(data,encoding='gb18030').encode('gb18030'))
+    if response.geturl()==loginurl:
+        return '404'
+    else:
+        home_page=response.read().decode('gb18030')
+        soup=BeautifulSoup(home_page,"html.parser")
+        user_name=soup.find_all('div')
+        for i,j in enumerate(user_name):
+            if i==0 or i==1:
+                temp_name=j
+            elif i==2:
+                temp_totime=j
+            else:
+                break
+        name_one=str(re.search("</a>.+",str(temp_name)).group()).split()[1].split('[')[1].split(']')[0]
+        state_log,state_log_one,today_time,today_time_one=str(temp_totime.string).split()
+        # print(name_one)
+        # print(state_log+state_log_one,end=' ')
+        # print(today_time,today_time_one,end="  ")
+        return name_one,state_log+state_log_one,today_time,today_time_one,opener
+    
+def call_bs_web(opener,name_one,today_time_one,processnumber,queue_info,login_button,
+                spider_Addr,spider_Addr1,spider_Addr2,processId,processevent):
+    '''新的进程启动搜索'''
+    if os.path.isfile(os.path.abspath('baidu_sougou_news_temp.txt')):
+        error_info='请先删除文件【baidu_sougou_news_temp.txt】再继续...'
+        queue_info.put(error_info)
+        error_info='文件路径-->>>%s'%os.path.abspath('baidu_sougou_news_temp.txt')
+        queue_info.put(error_info)
+        exit()
+    login_button['offon']=True
+    meitidict={'MT':0}
+    luntandict={'LT':0}
+    istockdict={'TOCK':0}
+
+    num_boss_lead=[]
+    try:
+        with open("领导.ini")as FFF:
+            name_FFF=FFF.read()
+            for number in name_FFF.split('\n'):
+                for numberss in number.split('|'):
+                    if numberss !='':
+                        num_boss_lead.append(numberss.strip())
+    except:
+        queue_info.put('领导.ini文件格式有误！！！请检查...')
+        exit()
+    shield_info=[]
+    try:
+        with open("关键字屏蔽.ini")as FC:
+            for u in FC:
+                kb=u.split('|')
+                for cd in kb:
+                    if cd !='\n' and cd !='':
+                        shield_info.append(cd.strip())
+    except:
+        queue_info.put('关键字屏蔽.ini文件格式有误!!!请检查...')
+        exit()
+
+    processId.append(os.getpid())
+    if spider_Addr=='T':
+        info_NEWS_add(opener,name_one,today_time_one,processnumber,
+                      num_boss_lead,shield_info,queue_info,meitidict,processId,processevent)
+    if spider_Addr1=='T':
+        nxny_info_add(opener,name_one,today_time_one,queue_info,luntandict)
+    if spider_Addr2=='T':
+        istock_info_add(opener,name_one,today_time_one,queue_info,istockdict)
+
+    try:
+        requestip=':'.join(
+            ['本次IP地址',json.loads(urllib.request.urlopen('http://httpbin.org/ip').read().decode())['origin']])
+    except:
+        requestip='IP地址获取失败'
+    queue_info.put("本次搜索网络媒体信息共有【 %s 】条" % meitidict["MT"])
+    queue_info.put("本次搜索nxny博文信息共有【 %s 】条" % luntandict["LT"])
+    queue_info.put("本次搜索金融界博文信息共有【 %s 】条" % istockdict["TOCK"])
+    processevent.clear()
+    with open('使用记录.ini', 'a')as who_is_who:
+        who_is_who.write('%s  %s %s \n%s\n' % (time_now, name_one, requestip, '-' * 60))
+    try:
+        login_button['offon']=False
+        os.remove('baidu_sougou_news_temp.txt')
+    except:
+        queue_info.put('文件被占用，请及时手动删除...')
+        queue_info.put('文件路径-->>>%s' % os.path.abspath('baidu_sougou_news_temp.txt'))
+
+
+
+def info_NEWS_add(opener,name_one,today_time_one,processnumber,
+                  num_boss_lead,shield_info,queue_info,meitidict,processId,processevent):
+    '''网络媒体信息入库添加'''
+    baidu_run(processnumber,queue_info,processId,processevent)
+    sougou_run(processnumber,queue_info,processId,processevent)
+    size=os.path.getsize(os.path.abspath('baidu_sougou_news_temp.txt'))
+    queue_info.put("正在添加信息，请稍候...")
+    #size_i=0
+    with open('baidu_sougou_news_temp.txt', encoding='utf-8')as f:
+        for i in f:
+            #size_i+=len(i.encode())+1
+            #print('信息添加进度:{:.0f}{}'.format((size_i / size * 100), '%'), end='\r')
+            try:
+                name, title, link=i.split('||')
+                smalltype='网络媒体报道'
+                shield=[aa for aa in shield_info if aa not in title]
+                if len(shield) < len(shield_info):
+                    continue
+                if "产品" in title or "信用卡" in title:
+                    smalltype='公司产品报道'
+                numbers=title_numbers(title)
+                for EAT in num_boss_lead:
+                    if EAT in title:
+                        smalltype='涉及公司领导报道'
+                        break
+            except Exception as f:
+                queue_info.put('这条信息出了毛病【%s】！手动添加...【%s】'%(f,i))
+                continue
+            else:
+                info_add_url='http://192.168.0.237:99/web_up_add.asp'
+                data1={'web_typename':name,
+                       'web_smalltype':smalltype,
+                       's_engin':'google',
+                       'web_title':title,
+                       'web_url':link,
+                       'update':today_time_one,
+                       'web_no':numbers,
+                       'web_cd':'3',
+                       'web_beian':'0',
+                       'web_linkok':'1',
+                       'wlock':'0',
+                       'webip':'',
+                       'whereis':'',
+                       'content1':'',
+                       'up_user':name_one,
+                       'Submit':'提交'}
+                try:
+                    database=urllib.parse.urlencode(data1,encoding='gb18030').encode('gb18030')
+                    new_info=opener.open(info_add_url, data=database)
+                    meitidict['MT']+=1
+                except:
+                    queue_info.put('需要手动添加这条信息...【%s %s】'%(title, link))
+                    continue
+        queue_info.put("信息添加完成!")
+
+def istock_info_add(opener,name_one,today_time_one,queue_info,istockdict):
+    '''金融界信息入库'''
+    info_news_papa=istock(istock_url,queue_info)
+    for i in info_news_papa:
+        try:
+            name,link,title=i
+        except Exception as f:
+            queue_info.put('论坛添加出现点啥问题【%s】'%f)
+            continue
+        info_add_url='http://192.168.0.237:99/web_up_add.asp'
+        data1={'web_typename':name,
+              'web_smalltype':'论坛/博文',
+              's_engin':'google',
+              'web_title':title,
+              'web_url':link,
+              'update':today_time_one,
+              'web_no':'',
+              'web_cd':'3',
+              'web_beian':'0',
+              'web_linkok':'1',
+              'wlock':'0',
+              'webip':'',
+              'whereis':'',
+              'content1':'',
+              'up_user':name_one,
+              'Submit':'提交'}
+        try:
+            database=urllib.parse.urlencode(data1,encoding='gb18030').encode('gb18030')
+            new_info=opener.open(info_add_url,data=database)
+            istockdict["TOCK"]+=1
+        except:
+            queue_info.put('这条信息需要手动添加：%s %s '%(title,link))
+            continue
+def nxny_info_add(opener,name_one,today_time_one,queue_info,luntandict):
+    '''nxny信息入库'''
+    info_news_papa=nxny_spider(queue_info)
+    for i in info_news_papa:
+        for sos in i:
+            try:
+                name=sos[0]
+                title=sos[1]
+                link=sos[2]
+            except:
+                queue_info.put('论坛添加出现点啥问题了')
+                continue
+            info_add_url='http://192.168.0.237:99/web_up_add.asp'
+            data1={'web_typename':name,
+                  'web_smalltype':'论坛/博文',
+                  's_engin':'google',
+                  'web_title':title,
+                  'web_url':link,
+                  'update':today_time_one,
+                  'web_no':'',
+                  'web_cd':'3',
+                  'web_beian':'0',
+                  'web_linkok':'1',
+                  'wlock':'0',
+                  'webip':'',
+                  'whereis':'',
+                  'content1':'',
+                  'up_user':name_one,
+                  'Submit':'提交'}
+            try:
+                database=urllib.parse.urlencode(data1,encoding='gb18030').encode('gb18030')
+                new_info=opener.open(info_add_url,data=database)
+                luntandict["LT"]+=1
+            except:
+                queue_info.put('这条信息需要手动添加：%s %s '%(title,link))
+                continue
+
+class Application(object):
+    def __init__(self,root):
+        self.root=root
+        self.root.attributes('-topmost', True)
+        self.root.title('舆情信息搜索by12')
+        self.chevar=StringVar()
+        self.varlog=StringVar()
+        self.varlogII=StringVar()
+        self.varlogIII=StringVar()
+        self.username=StringVar()
+        self.userpwd=StringVar()
+        self.root.geometry('550x610+350+200')
+        self.root.resizable(width = False, height = False)
+        self.processnum=IntVar()
+        self.spider_addr=StringVar()
+        self.spider_addr1=StringVar()
+        self.spider_addr2=StringVar()
+        self.login_state=False
+        self.login_button=True
+        self.chevar.set('T')
+        self.spider_addr.set('T')
+        self.spider_addr1.set('T')
+        self.spider_addr2.set('T')
+        self.processnum.set(5)
+        self.login_button=Manager().dict([('offon',False)])
+
+    def set_lab(self):
+        '''设置初始界面'''
+        #Label(self.root, text='*********************'*4,font=('楷体', '14')).grid(row=0,columnspan=8, sticky=W)
+        Label(self.root, text='*********************'*4,font=('楷体', '14')).grid(row=12, columnspan=8, sticky=W)
+        Label(self.root,text='帐号:',font=('楷体','14')).grid(row=0,sticky=W)
+        Label(self.root,text='密码:',font=('楷体','14')).grid(row=1,sticky=W)
+        Label(self.root,text='是否晚班:',fg='Blue',font=('楷体','14')).grid(row=3,sticky=W)
+        Label(self.root,text='搜索位置',fg='Blue',font=('楷体','14')).grid(row=2,sticky=W)
+        admin=Entry(self.root,textvariable=self.username,insertbackground='Red',bd=5,width=25)
+        admin.grid(row=0,column=1,columnspan=4,sticky=W)
+        admin.bind("<KeyPress-Return>",self.login_enter)
+        admin.bind("<KeyPress-KP_Enter>",self.login_enter)
+        passwd=Entry(self.root,textvariable=self.userpwd,insertbackground='Red',show='*',bd=5,width=25)
+        passwd.grid(row=1,column=1,columnspan=4,sticky=W)
+        passwd.bind("<KeyPress-Return>",self.login_enter)
+        passwd.bind("<KeyPress-KP_Enter>",self.login_enter)
+        
+        Checkbutton(self.root,text='否',variable=self.chevar,
+                    onvalue="T", offvalue="F").grid(row=3,column=1,sticky=W)
+        
+        Button(self.root,text='登录',command=self.login_web,font=('楷体','14')).grid(row=8,column=0,sticky=W)
+        Button(self.root,text='退出',command=self.break_web,font=('楷体','14')).grid(row=8,column=1,sticky=W)
+        
+        Label(self.root,textvariable=self.varlog).grid(row=5,columnspan=4,sticky=W)
+        Label(self.root,textvariable=self.varlogII).grid(row=6,columnspan=4,sticky=W)
+        Label(self.root,textvariable=self.varlogIII,width=15).grid(row=7,columnspan=4,sticky=W)
+        
+        Label(self.root,text='进程数:',fg='red',font=('楷体','14')).grid(row=4,sticky=W)
+        Radiobutton(self.root,text='5个',variable=self.processnum,
+                    value=5,command=lambda :self.set_process(5),font=('楷体','14')).grid(row=4,column=1,sticky=W)
+        Radiobutton(self.root,text='10个',variable=self.processnum,
+                    value=10,command=lambda :self.set_process(10),font=('楷体','14')).grid(row=4,column=2,sticky=W)
+        Radiobutton(self.root,text='15个',variable=self.processnum,
+                    value=15,command=lambda :self.set_process(15),font=('楷体','14')).grid(row=4,column=3,sticky=W)
+
+        Checkbutton(self.root,text='百度360',variable=self.spider_addr,
+                    onvalue="T", offvalue="F").grid(row=2,column=1,sticky=W)
+        Checkbutton(self.root,text='nxny论坛',variable=self.spider_addr1,
+                    onvalue="T", offvalue="F").grid(row=2,column=2,sticky=W)
+        Checkbutton(self.root,text='金融界istock',variable=self.spider_addr2,
+                    onvalue="T", offvalue="F").grid(row=2,column=3,sticky=W)
+        
+        text=Text(self.root,width=67,height=18,
+                  font="楷体,14,bold,fg=green",undo=True,relief=FLAT) #"楷体,14,bold,fg=green"
+        text.grid(row=11,columnspan=6,sticky=W) #('楷体','14','bold')
+
+        Button(self.root, text='开始', width=11, height=2,
+               command=lambda :self.start_threads(text),
+               font=('楷体','15')).grid(row=9,column=1,columnspan=3)
+        self.root.protocol('WM_DELETE_WINDOW',lambda :self.exeoff())
+    def start_threads(self,text):
+        '''启用一个线程实时获取进度,启用一个进程开启任务'''
+        if self.login_state and not self.login_button['offon']:
+            processnumber=self.processnum.get()
+            info_q=Manager().Queue()
+            self.processId=Manager().list()
+            self.processevent=Manager().Event()
+            self.processevent.set()
+            process=Process(target=call_bs_web,args=(self.response[4],self.response[0],self.response[3],
+                                                     processnumber,info_q,self.login_button,self.spider_Addr,
+                                                     self.spider_Addr1,self.spider_Addr2,self.processId,self.processevent))
+            process.start()
+            thread=threading.Thread(target=self.get_tilte_info, args=(info_q,text))
+            thread.setDaemon(True)
+            thread.start()
+            
+        else:
+            if self.processevent:
+                messagebox.showerror('Error', '正在搜索中\n请关闭重试')
+            else:
+                messagebox.showerror('Error', '没有登录\n请登录后重试')
+    def set_process(self,num):
+        '''设置进程数'''
+        if not self.login_state:
+            self.processnum.set(num)
+        else:
+            self.processnum.set(5)
+            messagebox.showerror('Error','选择无效\n当前用户退出后再选择!\n当前进程数%d'%self.processnum.get())
+
+    def login_enter(self,event):
+        self.login_web()
+    def login_web(self):
+        '''登录web'''
+        state_web=self.chevar.get()
+        web_name=self.username.get()
+        web_pwd=self.userpwd.get()
+        if not self.login_state:
+            if state_web and web_name and web_pwd:
+                self.response=login_web(web_name,web_pwd,state_web)
+                if self.response=='404':
+                    messagebox.showwarning('提示','帐号或密码不正确')
+                else:
+                    self.spider_Addr=self.spider_addr.get()
+                    self.spider_Addr1=self.spider_addr1.get()
+                    self.spider_Addr2=self.spider_addr2.get()
+                    self.login_state=True
+                    self.varlog.set(self.response[0])
+                    self.varlogII.set(self.response[1])
+                    self.varlogIII.set(self.response[2]+self.response[3])
+            else:
+                messagebox.showerror('Error','输入不正确\n请重新输入')
+        else:
+            messagebox.showinfo('login','已经登录成功,请勿重新登录')
+    def break_web(self):
+        '''退出web'''
+        if self.login_state:
+            self.login_state=False
+            messagebox.showinfo('成功','用户【%s】退出成功'%self.response[0])
+            self.varlog.set('')
+            self.varlogII.set('')
+            self.varlogIII.set('')
+        else:
+            messagebox.showerror('Error','暂无用户在线')
+
+    def get_tilte_info(self,info_q,text):
+        '''启动的thread线程获取程序操作进度信息'''
+        while True:
+            try:
+                info=info_q.get()
+                text.insert(INSERT, info)
+                text.insert(INSERT, '\n')
+                text.see(INSERT)
+            except Exception:
+                self.login_button=True
+                break
+                
+    def starting(self):
+        '''开启界面'''
+        pass
+
+    def exeoff(self):
+        try:
+            if os.path.isfile(os.path.abspath('baidu_sougou_news_temp.txt')):
+                os.remove('baidu_sougou_news_temp.txt')
+            '''
+            import signal
+            for i in self.processId:
+                try:
+                    print(i)
+                    os.kill(i,signal.SIGTERM)
+                except Exception:
+                    continue
+            '''
+            
+        except Exception:
+            pass
+        self.root.destroy()
+        os.popen('taskkill /F /IM "WebinfoSpider.exe"')
+if __name__=='__main__':
+    freeze_support()
+    root=Tk()
+    window=Application(root)
+    window.set_lab()
+    window.root.mainloop()
